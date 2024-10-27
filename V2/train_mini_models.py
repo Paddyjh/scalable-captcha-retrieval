@@ -2,26 +2,36 @@ import os
 import numpy as np
 import tensorflow as tf
 import re
+import argparse
 from tensorflow.keras import layers, models, optimizers
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
 from tensorflow.keras.utils import to_categorical
 from sklearn.model_selection import train_test_split
 
-# 1. Data Preparation
+# Set up command-line argument parsing
+parser = argparse.ArgumentParser(description='CAPTCHA Solver Training')
+parser.add_argument('--min_captcha_length', type=int, default=4, help='Minimum number of characters in CAPTCHA')
+parser.add_argument('--max_captcha_length', type=int, default=6, help='Maximum number of characters in CAPTCHA')
+parser.add_argument('--data_dir', type=str, help='Directory of CAPTCHA images')
+parser.add_argument('--output_model_prefix', type=str, help='Prefix for the output model name')
+args = parser.parse_args()
+
+# Assign command-line arguments to variables
+MIN_CAPTCHA_LENGTH = args.min_captcha_length
+MAX_CAPTCHA_LENGTH = args.max_captcha_length
+DATA_DIR = args.data_dir
+OUTPUT_MODEL = f"{args.output_model_prefix}_{MIN_CAPTCHA_LENGTH}_{MAX_CAPTCHA_LENGTH}.h5"
 
 # Parameters
 IMAGE_WIDTH = 192
 IMAGE_HEIGHT = 96
 IMAGE_CHANNELS = 3
-MIN_CAPTCHA_LENGTH = 4  # Minimum number of characters in captcha
-MAX_CAPTCHA_LENGTH = 6  # Maximum number of characters in captcha
 BATCH_SIZE = 64
-EPOCHS = 50
+EPOCHS = 35
 SYMBOLS_FILE = 'symbols.txt'
-DATA_DIR = 'V2/data/final_4_6_cleaned_wild_crazy'  # Replace with your captcha images directory
 
 # Derived Parameters
-NUM_CHAR_CLASSES = MAX_CAPTCHA_LENGTH - MIN_CAPTCHA_LENGTH + 1  # Number of possible captcha lengths
+NUM_CHAR_CLASSES = MAX_CAPTCHA_LENGTH - MIN_CAPTCHA_LENGTH + 1
 
 # Load symbol set
 with open(SYMBOLS_FILE, 'r') as f:
@@ -32,12 +42,9 @@ num_classes = num_symbols + 1  # +1 for the blank/padding character
 
 # Function to encode labels
 def encode_label(label):
-    # Remove any trailing '_number' pattern
     label = re.sub(r'_\d+$', '', label)
-    # Replace '~' with '\' before encoding
     label = label.replace('~', '\\')
     encoded = [symbol_to_num[char] for char in label]
-    # Pad with a special 'blank' symbol (num_symbols) up to MAX_CAPTCHA_LENGTH
     while len(encoded) < MAX_CAPTCHA_LENGTH:
         encoded.append(num_symbols)
     return encoded
@@ -49,10 +56,8 @@ num_chars = []
 
 for filename in os.listdir(DATA_DIR):
     if filename.endswith('.png'):
-        # Extract label from filename (assuming filename is label.png)
         label_str = os.path.splitext(filename)[0]
         label_length = len(label_str)
-        # Ensure label length is within specified bounds
         if MIN_CAPTCHA_LENGTH <= label_length <= MAX_CAPTCHA_LENGTH:
             label_encoded = encode_label(label_str)
             images.append(os.path.join(DATA_DIR, filename))
@@ -101,19 +106,16 @@ def data_generator(image_paths, labels, num_chars, batch_size):
             batch_images = np.array(batch_images, dtype='float32') / 255.0
             batch_labels = np.array(batch_labels)
             batch_num_chars = np.array(batch_num_chars)
-            # One-hot encode labels for each character position
             batch_labels_ohe = {
                 f'char_{i+1}': to_categorical(batch_labels[:, i], num_classes=num_classes)
                 for i in range(MAX_CAPTCHA_LENGTH)
             }
-            # One-hot encode number of characters
             batch_num_chars_adjusted = batch_num_chars - MIN_CAPTCHA_LENGTH
             batch_labels_ohe['num_chars'] = to_categorical(
                 batch_num_chars_adjusted, num_classes=NUM_CHAR_CLASSES
             )
             yield (batch_images, batch_labels_ohe)
 
-# Define output_signature
 output_signature = (
     tf.TensorSpec(shape=(None, IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS), dtype=tf.float32),
     {
@@ -131,13 +133,8 @@ val_gen = tf.data.Dataset.from_generator(
     output_signature=output_signature
 )
 
-
-# 2. Model Architecture
-
-# Input layer
+# Model Architecture
 input_tensor = layers.Input(shape=(IMAGE_HEIGHT, IMAGE_WIDTH, IMAGE_CHANNELS))
-
-# Convolutional layers
 x = layers.Conv2D(32, (3,3), activation='relu', padding='same')(input_tensor)
 x = layers.MaxPooling2D((2,2))(x)
 x = layers.Conv2D(64, (3,3), activation='relu', padding='same')(x)
@@ -146,44 +143,33 @@ x = layers.Conv2D(128, (3,3), activation='relu', padding='same')(x)
 x = layers.MaxPooling2D((2,2))(x)
 x = layers.Conv2D(256, (3,3), activation='relu', padding='same')(x)
 x = layers.MaxPooling2D((2,2))(x)
-
-# Flatten
 x = layers.Flatten()(x)
 x = layers.Dense(1024, activation='relu')(x)
 x = layers.Dropout(0.5)(x)
 
-# Output layers for each character position
 outputs = []
 for i in range(MAX_CAPTCHA_LENGTH):
     outputs.append(
-        layers.Dense(num_classes, activation='softmax', name=f'char_{i+1}')
-        (x)
+        layers.Dense(num_classes, activation='softmax', name=f'char_{i+1}')(x)
     )
 
-# Output layer for number of characters
 num_chars_output = layers.Dense(
     NUM_CHAR_CLASSES, activation='softmax', name='num_chars'
 )(x)
 outputs.append(num_chars_output)
 
-# Define the model
 model = models.Model(inputs=input_tensor, outputs=outputs)
 
-# 3. Compile the Model
-
-# Define loss for each output
 losses = {
     f'char_{i+1}': 'categorical_crossentropy' for i in range(MAX_CAPTCHA_LENGTH)
 }
 losses['num_chars'] = 'categorical_crossentropy'
 
-# Define loss weights (optional, can be adjusted)
 loss_weights = {
     f'char_{i+1}': 1.0 for i in range(MAX_CAPTCHA_LENGTH)
 }
 loss_weights['num_chars'] = 1.0
 
-# Compile the model
 model.compile(
     optimizer=optimizers.Adam(),
     loss=losses,
@@ -194,19 +180,9 @@ model.compile(
     }
 )
 
-model.summary()
-
-# 4. Training
-
-# Calculate steps per epoch
 steps_per_epoch = len(train_images) // BATCH_SIZE
 validation_steps = len(val_images) // BATCH_SIZE
 
-# Create generators
-# train_gen = data_generator(train_images, train_labels, train_num_chars, BATCH_SIZE)
-# val_gen = data_generator(val_images, val_labels, val_num_chars, BATCH_SIZE)
-
-# Fit the model
 history = model.fit(
     train_gen,
     steps_per_epoch=steps_per_epoch,
@@ -215,44 +191,4 @@ history = model.fit(
     validation_steps=validation_steps
 )
 
-# 5. Evaluation and Prediction
-
-# Function to decode predictions
-def decode_predictions(preds):
-    char_preds = []
-    for i in range(MAX_CAPTCHA_LENGTH):
-        pred = np.argmax(preds[f'char_{i+1}'], axis=-1)
-        char_preds.append(pred)
-    num_chars_pred = np.argmax(preds['num_chars'], axis=-1) + MIN_CAPTCHA_LENGTH
-    result = []
-    for i in range(len(num_chars_pred)):
-        captcha = ''
-        for j in range(num_chars_pred[i]):
-            if char_preds[j][i] < num_symbols:
-                captcha += symbols[char_preds[j][i]]
-            else:
-                # Handle blank/padding if necessary
-                pass
-        result.append(captcha)
-    return result
-
-# Example Prediction
-def predict_captcha(image_path):
-    img = tf.keras.preprocessing.image.load_img(
-        image_path, target_size=(IMAGE_HEIGHT, IMAGE_WIDTH)
-    )
-    img = tf.keras.preprocessing.image.img_to_array(img)
-    img = np.expand_dims(img, axis=0) / 255.0
-    preds = model.predict(img)
-    decoded = decode_predictions(preds)
-    return decoded[0]
-
-# Example usage
-# captcha_text = predict_captcha('path_to_some_captcha.png')
-# print(captcha_text)
-
-# Save the model
-model.save('updated_wild_crazy_model_4_6.h5')
-
-# Load the model
-# model = models.load_model('captcha_model.h5')
+model.save(OUTPUT_MODEL)
