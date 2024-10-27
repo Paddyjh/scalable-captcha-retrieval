@@ -1,8 +1,17 @@
 import glob
 import csv
+import sys
+import os
+import argparse
 
-# Step 1: Define the list of .txt files
-txt_files = glob.glob("V2/all_txt_files/*.txt")
+# Take in directory conatining all the .txt files 
+parser = argparse.ArgumentParser(description="Combine and sort .txt files into a single CSV file.")
+parser.add_argument("--dir", required=True, help="Directory containing .txt files to be combined.")
+args = parser.parse_args()
+
+# Step 1: Define the list of .txt files from the specified directory
+directory_path = args.dir
+txt_files = glob.glob(os.path.join(directory_path, "*.txt"))
 
 # Step 2: Create a new .csv file and write all lines from each .txt file into it
 with open("combined_submission.csv", "w", newline='') as csvfile:
